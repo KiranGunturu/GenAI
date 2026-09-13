@@ -9,3 +9,4 @@ pyodbc
 pydantic
 typing
 huggingface_hub
+ipykernel
