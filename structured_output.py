@@ -32,3 +32,5 @@ while True:
     print(f"Operation Type: {result.operation}")
     print(f"Tables Used: {', '.join(result.tables_used)}")
     print(f"Filters Used: {', '.join(result.filters_used)}")
+
+    
