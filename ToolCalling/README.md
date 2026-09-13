@@ -1,46 +1,49 @@
 # Stock Price Tool Calling
 
-A command-line example of OpenAI Responses API tool calling. The program accepts stock-price questions continuously, asks the model to decide whether the stock-price tool is needed, retrieves live prices from Finnhub, and sends the tool results back to the model for a natural-language answer.
+A command-line example of tool calling with the OpenAI Responses API. You ask
+stock-price questions in a loop; the model decides whether the stock-price tool
+is needed, the script fetches live prices from Finnhub, and the results are sent
+back to the model so it can answer in plain language.
 
 ## Features
 
-- Interactive `while` loop for multiple questions in one run
-- OpenAI Responses API function calling
+- Interactive loop that handles multiple questions in one run
+- Function calling via the OpenAI Responses API
 - Live stock prices from Finnhub
-- Support for multiple function calls in one model response
+- Handles multiple function calls in a single model response
 - Correct `function_call_output` and `call_id` handling
-- Graceful handling of network errors, `Ctrl+C`, and `quit`/`exit`
+- Graceful handling of network errors, `Ctrl+C`, and `quit` / `exit`
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A[User enters a question] --> B[main.py CLI loop]
-    B --> C[OpenAI Responses API]
+    A[User enters a question] --> B{quit or exit?}
+    B -- Yes --> Z[Exit program]
+    B -- No --> C[Send question + tool schema<br/>to OpenAI Responses API]
     C --> D{Function call returned?}
-    D -- No --> E[Print model response]
+    D -- No --> E[Print model answer]
     D -- Yes --> F[Extract every function_call]
     F --> G[Parse ticker arguments]
     G --> H[get_stock_price]
     H --> I[Finnhub /quote API]
     I --> H
-    H --> J[Build function_call_output for each call]
-    J --> K[OpenAI Responses API with previous_response_id]
+    H --> J[Build a function_call_output per call]
+    J --> K[Resend results with<br/>previous_response_id]
     K --> E
     E --> A
-    A --> L[quit or exit]
 ```
 
 ### Request flow
 
-1. The user enters a question such as `What is the stock price of Microsoft?`.
-2. `main.py` sends the question and the tool schema to the OpenAI Responses API.
-3. The model returns one or more `function_call` items when a price lookup is needed.
-4. The script executes each requested call locally.
-5. `get_stock_price` requests the current quote from Finnhub.
-6. The script returns one `function_call_output` item per call using the matching `call_id`.
-7. The tool results are submitted with `previous_response_id`.
-8. The model produces the final readable answer.
+1. The user asks something like `What is the stock price of Microsoft?`.
+2. `main.py` sends the question and the tool schema to the Responses API.
+3. When a price lookup is needed, the model returns one or more `function_call` items.
+4. The script runs each requested call locally.
+5. `get_stock_price` fetches the current quote from Finnhub.
+6. The script returns one `function_call_output` per call, each carrying its matching `call_id`.
+7. Those results are submitted back with `previous_response_id`.
+8. The model produces the final, readable answer.
 
 ## Project structure
 
@@ -58,7 +61,7 @@ ToolCalling/
 - A Finnhub API token
 - Internet access
 
-The required packages are listed in the workspace-level `requirements.txt` file. This project uses:
+Dependencies are listed in the workspace-level `requirements.txt`:
 
 - `openai`
 - `python-dotenv`
@@ -66,13 +69,22 @@ The required packages are listed in the workspace-level `requirements.txt` file.
 
 ## Setup
 
-From the workspace root, create and activate a virtual environment if needed:
+From the workspace root, create and activate a virtual environment, then install
+the dependencies.
 
-### Windows PowerShell
+**Windows (PowerShell)**
 
 ```powershell
 python -m venv genaienv
 .\genaienv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**macOS / Linux**
+
+```bash
+python3 -m venv genaienv
+source genaienv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -90,16 +102,10 @@ Do not commit `.env` or expose either key in source control.
 From the workspace root:
 
 ```powershell
-.\genaienv\Scripts\python.exe ToolCalling\main.py
-```
-
-Or, after activating the environment:
-
-```powershell
 python ToolCalling\main.py
 ```
 
-The program displays a prompt:
+The program shows a prompt:
 
 ```text
 Ask a stock-price question (or type 'quit'):
@@ -113,40 +119,36 @@ What is Microsoft trading at?
 How much is Google stock?
 ```
 
-Type `quit`, `exit`, press `Ctrl+C`, or send EOF to stop the program.
+To stop, type `quit` or `exit`, press `Ctrl+C`, or send EOF.
 
 ## Configuration
 
-The OpenAI model is currently set in `main.py`:
+The model is set in `main.py`:
 
 ```python
 model="gpt-5.6-sol"
 ```
 
-The tool schema currently exposes one function:
-
-```text
-get_stock_price(ticker)
-```
-
-To add more tools, add their schemas to `my_tools` and implement their dispatch logic in the tool execution loop.
+The tool schema currently exposes a single function, `get_stock_price(ticker)`.
+To add more tools, add their schemas to `my_tools` and handle their dispatch in
+the tool-execution loop.
 
 ## Error handling
 
 - Unknown or unavailable tickers return `Ticker not found`.
-- Finnhub request failures are returned as readable tool results.
+- Finnhub request failures are returned as readable tool results rather than crashing the loop.
 - Empty questions are ignored.
-- Questions that do not require a tool are answered directly by the model.
-- Multiple function calls are all executed and returned before requesting the final model response.
+- Questions that don't need a tool are answered directly by the model.
+- When the model requests several function calls, all of them are executed and returned before the final answer is requested.
 
-## Important Responses API details
+## Responses API notes
 
-The script intentionally uses:
+A few details the script depends on:
 
-- `item.type == "function_call"` to ignore reasoning items.
-- `tool_call.call_id` to identify the requested function call.
-- `type: "function_call_output"` for tool results.
-- `output` containing JSON text for the tool result.
-- `previous_response_id` to continue the same response chain.
+- Filter on `item.type == "function_call"` to skip reasoning items.
+- Use `tool_call.call_id` (not `tool_call.id`) to identify each call.
+- Return results as `function_call_output` items whose `output` is JSON text.
+- Chain the follow-up request with `previous_response_id`.
 
-Using `tool_call.id` instead of `tool_call.call_id`, or sending a plain string instead of a `function_call_output` item, causes the API to reject the follow-up request.
+Using `tool_call.id` in place of `call_id`, or sending a plain string instead of
+a `function_call_output` item, will cause the API to reject the follow-up request.
