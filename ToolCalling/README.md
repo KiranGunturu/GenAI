@@ -22,16 +22,17 @@ flowchart TD
     B -- Yes --> Z[Exit program]
     B -- No --> C[Send question + tool schema<br/>to OpenAI Responses API]
     C --> D{Function call returned?}
-    D -- No --> E[Print model answer]
-    D -- Yes --> F[Extract every function_call]
+    D -- No, model answered directly --> E1[Print first response<br/>output_text]
+    D -- Yes, tool requested --> F[Extract every function_call]
     F --> G[Parse ticker arguments]
     G --> H[get_stock_price]
     H --> I[Finnhub /quote API]
     I --> H
     H --> J[Build a function_call_output per call]
     J --> K[Resend results with<br/>previous_response_id]
-    K --> E
-    E --> A
+    K --> E2[Print second response<br/>output_text]
+    E1 --> A
+    E2 --> A
 ```
 
 ### Request flow
