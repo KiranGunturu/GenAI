@@ -425,3 +425,8 @@ A few details the script depends on:
 
 Using `tool_call.id` in place of `call_id`, or sending a plain string instead of
 a `function_call_output` item, will cause the API to reject the follow-up request.
+
+
+## Execution
+
+![alt text](images/image.png)
