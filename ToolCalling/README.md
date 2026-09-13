@@ -46,6 +46,90 @@ flowchart TD
 7. Those results are submitted back with `previous_response_id`.
 8. The model produces the final, readable answer.
 
+## Running on AWS
+
+The same two-round tool-calling loop works unchanged as a serverless app. You are
+only relocating each local piece into a managed service — the control flow (ask the
+model, run the tool if requested, feed the result back, return the answer) is
+identical.
+
+### Local component → AWS service
+
+| Local script | AWS equivalent |
+| --- | --- |
+| CLI `while` loop | Client calling **API Gateway** (or a Lambda Function URL) |
+| `main.py` orchestration | **Orchestrator Lambda** running the tool-calling loop |
+| OpenAI Responses API | **Amazon Bedrock** Converse API (native tool use) — or call OpenAI over HTTPS from the Lambda |
+| `get_stock_price` function | **Tool Lambda** (registered as a Bedrock action group) |
+| Finnhub `/quote` call | Unchanged — external HTTPS request from the Tool Lambda |
+| `.env` keys | **Secrets Manager** (or SSM Parameter Store) |
+| `previous_response_id` state | **DynamoDB** session table (or a Bedrock Agent session) |
+| `print(output_text)` | HTTP response returned through API Gateway |
+| — | **CloudWatch Logs / X-Ray** for logging and tracing |
+
+### Architecture
+
+```mermaid
+flowchart TD
+    U[Client / caller] -->|HTTPS request| AGW[API Gateway]
+    AGW --> ORCH[Orchestrator Lambda]
+
+    ORCH -->|Converse + toolConfig| BR[Amazon Bedrock model]
+    BR --> DEC{stopReason == tool_use?}
+
+    DEC -- No, model answered directly --> OUT[Return model answer]
+    DEC -- Yes, tool requested --> TL[Tool Lambda<br/>get_stock_price]
+    TL --> FH[Finnhub /quote API]
+    FH --> TL
+    TL -->|toolResult block| ORCH2[Orchestrator resends<br/>full message history]
+    ORCH2 --> BR
+    OUT --> AGW
+    AGW -->|HTTPS response| U
+
+    SM[(Secrets Manager<br/>API keys)] -.-> ORCH
+    SM -.-> TL
+    DDB[(DynamoDB<br/>session state)] -.-> ORCH
+    ORCH -.-> CW[[CloudWatch / X-Ray]]
+    TL -.-> CW
+```
+
+### Two ways to build it
+
+**A. Self-managed loop (closest to this project).** The Orchestrator Lambda runs
+the same loop you have now, calling Bedrock's `Converse` API with a `toolConfig`.
+Bedrock returns `stopReason == "tool_use"` with a `toolUse` block instead of an
+OpenAI `function_call`; you invoke the Tool Lambda, append a `toolResult` block,
+and call `Converse` again for the final text. The mapping is direct:
+`toolUseId` ≈ `call_id`, `toolResult` ≈ `function_call_output`.
+
+One difference worth noting: Bedrock's `Converse` API is **stateless**. There is no
+`previous_response_id` — you pass the full `messages` history on every call, which
+is why the diagram loops back with "resend full message history" and why DynamoDB
+holds session state for multi-turn conversations.
+
+**B. Bedrock Agents (managed orchestration).** Define an agent with an action group
+whose schema is `get_stock_price`, backed by the Tool Lambda. The agent runs the
+reason-and-call loop for you, so the orchestrator code mostly disappears. Less code
+to own, less control over the loop.
+
+### AWS request flow (self-managed)
+
+1. The client sends a question to API Gateway.
+2. API Gateway invokes the Orchestrator Lambda.
+3. The Lambda pulls API keys from Secrets Manager and calls Bedrock with the tool schema.
+4. If `stopReason == "tool_use"`, the Lambda invokes the Tool Lambda for each requested call.
+5. The Tool Lambda fetches the quote from Finnhub and returns it.
+6. The Orchestrator appends a `toolResult` per call and re-calls Bedrock with the full history.
+7. Bedrock returns the final answer, which is sent back through API Gateway to the client.
+
+### Production notes
+
+- **Egress:** in a locked-down (VPC) setup, the Tool Lambda's outbound call to Finnhub goes through a NAT Gateway; reach Bedrock, Secrets Manager, and DynamoDB over VPC (PrivateLink) endpoints so that traffic stays on the AWS network.
+- **Secrets:** enable rotation on the Secrets Manager entries; never bake keys into environment variables or code.
+- **IAM:** give each Lambda least-privilege roles — the Orchestrator needs `bedrock:InvokeModel` and `lambda:InvokeFunction`; the Tool Lambda needs only its Finnhub secret.
+- **Resilience & cost:** set Lambda timeouts and retries, and handle Bedrock throttling with backoff. Watch per-invocation model cost the same way you'd watch API rate limits locally.
+- **Model choice:** using Bedrock keeps prompts and responses inside your AWS account and region. If you need the exact OpenAI model instead, only the "brain" box changes — the Orchestrator Lambda calls the OpenAI Responses API over HTTPS and the rest of the architecture is unchanged.
+
 ## Project structure
 
 ```text
