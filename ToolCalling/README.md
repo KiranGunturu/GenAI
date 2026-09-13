@@ -46,6 +46,139 @@ flowchart TD
 7. Those results are submitted back with `previous_response_id`.
 8. The model produces the final, readable answer.
 
+## Code walkthrough
+
+The whole program is one file, `main.py`. Here are the pieces that matter, in the
+order the diagram follows.
+
+### The tool: `get_stock_price`
+
+The only function the model can trigger. It takes a ticker, calls Finnhub, and
+returns either the current price or a readable error string.
+
+```python
+def get_stock_price(ticker):
+    try:
+        response = requests.get(
+            "https://finnhub.io/api/v1/quote",
+            params={"symbol": ticker.upper(), "token": FINNHUB_API_KEY},
+            timeout=10,                 # don't hang forever on a slow network
+        )
+        response.raise_for_status()     # turn 401/429/500 into exceptions
+        data = response.json()
+
+        price = data.get("c")           # "c" = current price
+        if not price:                   # Finnhub returns 0 for unknown symbols
+            return "Ticker not found"
+        return price
+    except requests.RequestException as e:
+        return f"Error fetching price: {e}"
+```
+
+### The tool schema
+
+The model never sees the function body — only this description, which tells it the
+name, purpose, and arguments.
+
+```python
+my_tools = [
+    {
+        "type": "function",
+        "name": "get_stock_price",
+        "description": "Get the stock price of a given ticker symbol.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "The ticker symbol of the stock.",
+                }
+            },
+            "required": ["ticker"],
+        },
+    }
+]
+```
+
+### The interactive loop
+
+Each iteration reads a question, runs the two rounds, and prints the answer.
+`quit`/`exit`, `Ctrl+C`, and EOF all end the loop; blank input is skipped.
+
+```python
+while True:
+    try:
+        question = input("\nAsk a stock-price question (or type 'quit'): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nGoodbye!")
+        break
+
+    if question.lower() in {"quit", "exit"}:
+        print("Goodbye!")
+        break
+    if not question:
+        continue
+    # ... two rounds below ...
+```
+
+### Round 1 — ask, then check for a tool call
+
+```python
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input=question,
+    tools=my_tools,
+)
+
+response_id = response.id
+function_calls = [
+    item for item in response.output if item.type == "function_call"
+]
+
+# No tool needed → the model already answered (the "No" branch of the diagram).
+if not function_calls:
+    print(response.output_text)
+    continue
+```
+
+### Run the tools
+
+Every requested call is executed, and each result is tagged with its `call_id`.
+
+```python
+tool_output = []
+for tool_call in function_calls:
+    call_args = json.loads(tool_call.arguments)
+    if tool_call.name == "get_stock_price":
+        result = get_stock_price(call_args["ticker"])
+    else:
+        result = {"error": f"Unknown function: {tool_call.name}"}
+
+    tool_output.append(
+        {
+            "type": "function_call_output",
+            "call_id": tool_call.call_id,
+            "output": json.dumps({"stock_price": result}),
+        }
+    )
+```
+
+### Round 2 — send results back, get the final answer
+
+`previous_response_id` links this call to Round 1, so the model remembers the
+original question without resending it.
+
+```python
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input=tool_output,
+    previous_response_id=response_id,
+    tools=my_tools,
+)
+
+print(response.output_text)
+```
+
 ## Running on AWS
 
 The same two-round tool-calling loop works unchanged as a serverless app. You are
@@ -106,6 +239,61 @@ One difference worth noting: Bedrock's `Converse` API is **stateless**. There is
 `previous_response_id` — you pass the full `messages` history on every call, which
 is why the diagram loops back with "resend full message history" and why DynamoDB
 holds session state for multi-turn conversations.
+
+The same two rounds in Bedrock look like this — note that `toolConfig` replaces
+`my_tools`, `stopReason == "tool_use"` replaces the `function_call` check, and the
+full `messages` list is resent on Round 2:
+
+```python
+import boto3
+
+bedrock = boto3.client("bedrock-runtime")
+
+tool_config = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "get_stock_price",
+                "description": "Get the stock price of a given ticker symbol.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "ticker": {"type": "string", "description": "The ticker symbol."}
+                        },
+                        "required": ["ticker"],
+                    }
+                },
+            }
+        }
+    ]
+}
+
+messages = [{"role": "user", "content": [{"text": question}]}]
+
+# Round 1
+resp = bedrock.converse(modelId=MODEL_ID, messages=messages, toolConfig=tool_config)
+
+if resp["stopReason"] == "tool_use":
+    messages.append(resp["output"]["message"])          # keep the assistant turn
+    tool_results = []
+    for block in resp["output"]["message"]["content"]:
+        if "toolUse" in block:
+            tu = block["toolUse"]                        # toolUseId ≈ call_id
+            price = get_stock_price(tu["input"]["ticker"])
+            tool_results.append({
+                "toolResult": {
+                    "toolUseId": tu["toolUseId"],
+                    "content": [{"json": {"stock_price": price}}],
+                }
+            })
+    messages.append({"role": "user", "content": tool_results})
+
+    # Round 2 — resend the whole history (Converse keeps no server-side state)
+    resp = bedrock.converse(modelId=MODEL_ID, messages=messages, toolConfig=tool_config)
+
+print(resp["output"]["message"]["content"][0]["text"])
+```
 
 **B. Bedrock Agents (managed orchestration).** Define an agent with an action group
 whose schema is `get_stock_price`, backed by the Tool Lambda. The agent runs the
