@@ -429,4 +429,4 @@ a `function_call_output` item, will cause the API to reject the follow-up reques
 
 ## Execution
 
-![alt text](images\image.png)
+![alt text](images/image.png)
