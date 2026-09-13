@@ -18,19 +18,19 @@ back to the model so it can answer in plain language.
 
 ```mermaid
 flowchart TD
-    A[User enters a question] --> B{quit or exit?}
-    B -- Yes --> Z[Exit program]
-    B -- No --> C[Send question + tool schema<br/>to OpenAI Responses API]
-    C --> D{Function call returned?}
-    D -- No, model answered directly --> E1[Print first response<br/>output_text]
-    D -- Yes, tool requested --> F[Extract every function_call]
-    F --> G[Parse ticker arguments]
-    G --> H[get_stock_price]
-    H --> I[Finnhub /quote API]
+    A["User enters a question"] --> B{"quit or exit?"}
+    B -->|Yes| Z["Exit program"]
+    B -->|No| C["Send question + tool schema<br/>to OpenAI Responses API"]
+    C --> D{"Function call returned?"}
+    D -->|No, model answered directly| E1["Print first response<br/>output_text"]
+    D -->|Yes, tool requested| F["Extract every function_call"]
+    F --> G["Parse ticker arguments"]
+    G --> H["get_stock_price"]
+    H --> I["Finnhub /quote API"]
     I --> H
-    H --> J[Build a function_call_output per call]
-    J --> K[Resend results with<br/>previous_response_id]
-    K --> E2[Print second response<br/>output_text]
+    H --> J["Build a function_call_output per call"]
+    J --> K["Resend results with<br/>previous_response_id"]
+    K --> E2["Print second response<br/>output_text"]
     E1 --> A
     E2 --> A
 ```
