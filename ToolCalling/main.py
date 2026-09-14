@@ -2,7 +2,13 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import json
 import os
+import re
+import sys
+from pathlib import Path
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from mydb import get_schema, get_tables, run_query
 
 
 load_dotenv()
@@ -61,8 +67,45 @@ def get_currency_conversion(ticker, currency):
         return data.get("result")
     except requests.RequestException as e:
         return f"Error converting price: {e}"
-    
-# Tell the model what tools exist and how to call them. This is just a
+
+
+def get_database_schema(table_name):
+    """Return the columns and data types for a dbo table as JSON-ready data."""
+    schema = get_schema(table_name)
+    return schema.to_dict(orient="records")
+
+
+def list_database_tables():
+    """Return all available dbo tables as JSON-ready data."""
+    tables = get_tables()
+    return tables.to_dict(orient="records")
+
+
+def query_database(query):
+    """Run one read-only SELECT query against available dbo tables."""
+    table_references = re.findall(
+        r"\b(?:FROM|JOIN)\s+(?:\[?dbo\]?\.)?\[?([A-Za-z_][\w]*)\]?",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if not table_references:
+        raise ValueError("The query must reference at least one table.")
+
+    available_tables = {
+        row["TABLE_NAME"].lower() for row in list_database_tables()
+    }
+    unknown_tables = {
+        table.lower() for table in table_references
+        if table.lower() not in available_tables
+    }
+    if unknown_tables:
+        raise ValueError(
+            f"Unknown table(s): {', '.join(sorted(unknown_tables))}. "
+            "Use list_database_tables first."
+        )
+
+    results = run_query(query)
+    return results.to_dict(orient="records")
 # *description* — the model reads it to learn the function's name, what it
 # does, and what arguments it takes. It never sees or runs the code above.
 my_tools = [
@@ -119,6 +162,66 @@ my_tools = [
                     }
                 },
                 "required": ["ticker", "currency"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "get_database_schema",
+            "description": (
+                "Get the column names and data types for any table in the retail "
+                "database. Use list_database_tables first when the relevant "
+                "table is unknown, then inspect the selected table before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_name": {
+                        "type": "string",
+                        "description": (
+                            "The exact table name returned by list_database_tables."
+                        ),
+                    }
+                },
+                "required": ["table_name"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "list_database_tables",
+            "description": (
+                "List all available user tables in the dbo schema of the retail "
+                "database. Use this first for database questions when the relevant "
+                "table is unknown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "type": "function",
+            "name": "query_database",
+            "description": (
+                "Run exactly one read-only SQL SELECT query against the retail "
+                "database and return matching rows from tables discovered with "
+                "list_database_tables. Use this for questions about database data. "
+                "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, or multiple "
+                "statements."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "One plain SELECT statement using only tables returned "
+                            "by list_database_tables. Inspect relevant table schemas "
+                            "first if the required columns are unknown."
+                        ),
+                    }
+                },
+                "required": ["query"],
             },
         }
         ]
@@ -179,6 +282,14 @@ while True:
                         call_args["ticker"], call_args["currency"]
                     )
                 }
+            elif tool_call.name == "get_database_schema":
+                result = {
+                    "schema": get_database_schema(call_args["table_name"])
+                }
+            elif tool_call.name == "list_database_tables":
+                result = {"tables": list_database_tables()}
+            elif tool_call.name == "query_database":
+                result = {"rows": query_database(call_args["query"])}
             else:
                 result = {"error": f"Unknown function: {tool_call.name}"}
 
@@ -186,7 +297,7 @@ while True:
                 {
                     "type": "function_call_output",
                     "call_id": tool_call.call_id,
-                    "output": json.dumps(result),
+                    "output": json.dumps(result, default=str),
                 }
             )
 
