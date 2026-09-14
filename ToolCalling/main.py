@@ -190,6 +190,10 @@ while True:
                 }
             )
 
+        if not tool_output:
+            print("No tool output was produced; unable to continue this request.")
+            break
+
         response = client.responses.create(
             model="gpt-5.6-sol",
             input=tool_output,

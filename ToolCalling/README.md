@@ -496,3 +496,9 @@ a `function_call_output` item, will cause the API to reject the follow-up reques
 ![alt text](images/conversion.png)
 
 ![alt text](images/conversion.png)
+
+
+## When No tool calls; model will answer the question directly
+
+![alt text](images/notools.png)
+
